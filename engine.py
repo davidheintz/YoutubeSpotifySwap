@@ -4,6 +4,9 @@ from google.auth.transport.requests import Request
 import pickle
 import os
 import pandas as pd
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+from googleapiclient.errors import HttpError
 
 
 # uses key param to generate youtube build
@@ -85,6 +88,90 @@ def gen_user_playlist(yt, t, d, s):
                                      )
                                  ), fields="id").execute()
     return resp
+
+
+# adds a video to specified youtube user playlist when given video/playlist ids
+def add_video_to_playlist(yt, pl_id, v_id):
+    yt.playlistItems().insert(
+        part="snippet",
+        body={
+            'snippet': {
+                'playlistId': pl_id,
+                'resourceId': {
+                    'kind': 'youtube#video',
+                    'videoId': v_id
+                }
+            }
+        }
+    ).execute()
+
+
+# uses add_video_to_playlist method in loop to add group of videos to youtube user playlist
+def fill_user_playlist(yt, pl_id, s):
+    for vid in s:
+        add_video_to_playlist(yt, pl_id, vid)
+
+
+# searches youtube for all song/artist names in specified column of spotify playlist dataframe
+# gets the top result and stores the video id in array to return
+def search_for_ids(yt, s, col):
+    curr_pl = s[col]
+    curr_pl.dropna(inplace=True)
+    pl = []
+    for item in curr_pl:
+        try:
+            pl.append(yt.search().list(
+                q=item,
+                part="id",
+                maxResults=1
+            ).execute())
+        except HttpError:
+            break
+    ids = []
+    for item in pl:
+        for i in item['items']:
+            ids.append(i['id']['videoId'])
+    return ids
+
+
+# approve spotify user authorization using client id and secret
+def spotify_user_authentication(c_id, c_s, user):
+    s = spotipy.Spotify(
+        auth_manager=SpotifyOAuth(
+            client_id=c_id,
+            client_secret=c_s,
+            redirect_uri='http://localhost:8080',
+            scope='playlist-modify-public',
+            username=user
+        )
+    )
+    return s
+
+
+# returns array to be used as spotify playlist dataframe column
+# this array is created from spotify api playlist requests (1st artist/title stored)
+def add_col(t):
+    col = []
+    for item in t['items']:
+        track = item['track']
+        col.append((track['artists'][0]['name'], track['name']))
+    return col
+
+
+# return dataframe contains title/artist from all songs/playlists from spotify user (to search on youtube)
+def get_spotify_user_playlists(sp, user):
+    playlists = sp.user_playlists(user)
+    pl_frame = pd.DataFrame()
+    for playlist in playlists['items']:
+        name = playlist['name']
+        curr_list = sp.user_playlist(user, playlist['id'], fields='tracks,next')
+        tracks = curr_list['tracks']
+        col = add_col(tracks)
+        while tracks['next']:
+            tracks = sp.next(tracks)
+            col = col + add_col(tracks)
+        pl_frame = pd.concat([pl_frame, pd.DataFrame({name: col})], axis=1)
+    return pl_frame
 
 
 # transforms list of video id's (pl_ids) into a dataframe of video information
